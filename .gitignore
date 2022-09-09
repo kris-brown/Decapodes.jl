@@ -3,3 +3,5 @@
 /Manifest.toml
 /dev/
 *.mem
+
+examples/diff_adv/Manifest.toml

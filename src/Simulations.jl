@@ -16,7 +16,7 @@ using Catlab.Theories
 using PreallocationTools
 using LinearAlgebra
 
-export gen_sim,
+export gen_sim, diag2mat,
        BoxFunc, MatrixFunc, ElementwiseFunc, ArbitraryFunc, InPlaceFunc,
        ConstantFunc, TDInPlaceFunc
 
@@ -285,5 +285,100 @@ function check_consistency(dwd::WiringDiagram)
             This wire is between box $(sb)($(d[sb, :value])) and box $(tb)($(d[tb, :value]))""")
   end
 end
+
+
+function op2mat(op,funcs)
+  if only(typeof(op).parameters) == :compose
+    ops = map(op.args) do o
+      t = only(typeof(o).parameters)
+        return t == :generator ? o.args[1] : t
+    end
+    Mop = reduce(*, [funcs[o][:operator] for o in reverse(ops)])
+  else
+    Mop = funcs[only(typeof(op).parameters)][:operator]
+  end
+end
+
+function form2dimfun(form,f2d)
+  p = only(typeof(form).parameters)
+  if p == :otimes
+    return x -> sum([form2dimfun(a,f2d)(x) for a in form.args])
+  else
+    return f2d[p]
+  end
+end
+
+"""
+Construct a pair (A,B) such that solving for Ax=B satisfies the linear
+constraints of the decapode. This can depend on information known at runtime
+(i.e. the input from the previous timestep) or frozen information (i.e. fixed
+boundary conditions).
+"""
+function diag2mat(diagram, funcs, mesh;
+                  known=Dict(), form2dim=form2dim_def)
+  # Collect information about the decapode
+  #---------------------------------------
+
+  # State vector x is a block vector with an element for each vertex
+  dims = [form2dimfun(t,form2dim)(mesh) for t in diagram.ob_map]
+  n = sum(dims) # actual state length (not as a block vector)
+  cdims = cumsum(dims)
+  inds = [1:dims[1],[x+1:y for (x,y) in zip(cdims, cdims[2:end])]...]
+
+  # ∂ₜ edge in the decapode is special
+  dt_edge = findfirst(x->only(typeof(x).parameters)==:∂ₜ, diagram.hom_map)
+  # It determines which part of state is "input" and what is "output"
+  i_ind, o_ind = [f(dom(diagram).graph, dt_edge) for f in [src,tgt]]
+
+  # Construct block row constraint for each edge f(A)=B in the decapode
+  # e.g. [0 0 f 0 -1 0] ⋅ x = 0 (where x = [? ? A ? B ? ])
+  #-------------------------------------------------------------
+  homs = collect(enumerate(diagram.hom_map))
+  function filt(e)
+    se = string("$(e[2])")
+    (e[1] != dt_edge && !(occursin("proj",se) || occursin("sum",se)))
+  end
+  edge_blocks= map(filter(filt, homs)) do (e, op)
+    println("e $e op $op")
+    i, j = [f(dom(diagram).graph, e) for f in [src,tgt]]
+    nr, nc = dims[[i,j]]
+    A_row = zeros(Float64, (nc,n))
+    A_row[:, inds[i]] .= op2mat(op, funcs)
+    A_row[:, inds[j]] .= -I(nc)
+    B_row = zeros(nr, 1)
+    A_row => B_row
+  end
+
+  # TREAT SUMS AS BLOCK ROW CONSTRAINT: A+B=C
+  # e.g. [0 0 1 0 -1 1] ⋅ x = 0 (where x = [? ? A ? C B])
+  #------------------------------------------------------
+  sum_blocks = [] # TODO
+
+  # Combine to form A and B (not including runtime info)
+  #-----------------------------------------------------
+  base_A = vcat(first.(edge_blocks)..., first.(sum_blocks)...)
+  base_B = vcat(last.(edge_blocks)..., last.(sum_blocks)...)
+
+  # Runtime function which incorporates input and solves system of eqs
+  #-------------------------------------------------------------------
+  function f(du,u,p,t)
+    # NOTE: we ignore p, t
+
+    # Block row encoding A = inp
+    #---------------------------
+    known_A = zeros(Float64, (dims[i_ind], n))
+    known_A[:, inds[i_ind]] = I(dims[i_ind])
+    # Solve system of eqs
+    #--------------------
+    A = vcat(known_A, base_A)
+    b = vcat(u, base_B)
+    x = A \ b
+    # Extract ∂ₜ A
+    #-------------
+    return du .= x[inds[o_ind]]
+  end
+  return f
+end
+
 
 end

@@ -51,6 +51,7 @@ end;
 
 draw_equation(Diffusion)
 
+
 using Catlab.CategoricalAlgebra
 using CombinatorialSpaces, CombinatorialSpaces.DiscreteExteriorCalculus
 using CairoMakie
@@ -72,6 +73,7 @@ using Decapodes.Schedules
 explicit_ts = diag2dwd(Diffusion)
 to_graphviz(explicit_ts, orientation=LeftToRight)
 
+
 using LinearAlgebra
 using Decapodes.Examples, Decapodes.Simulations
 
@@ -82,6 +84,7 @@ funcs[:⋆₁] = Dict(:operator => ⋆(Val{1}, periodic_mesh, hodge=DiagonalHodg
                   :type => MatrixFunc());
 
 func, code = gen_sim(explicit_ts, funcs, periodic_mesh; autodiff=false);
+fun = diag2mat(Diffusion, funcs, periodic_mesh; known=Dict())
 
 using Distributions
 c_dist = MvNormal([7, 5], [1.5, 1.5])
@@ -93,8 +96,10 @@ fig
 
 using OrdinaryDiffEq
 
-prob = ODEProblem(func, c, (0.0, 100.0))
+prob = ODEProblem(func, c, (0.0, 10.0))
+prob2 = ODEProblem(fun, c, (0.0, 10.0))
 sol = solve(prob, Tsit5());
+sol2 = solve(prob2, Tsit5());
 
 # Plot the result
 times = range(0.0, 100.0, length=150)
@@ -110,6 +115,21 @@ framerate = 30
 record(fig, "diffusion.gif", range(0.0, 100.0; length=150); framerate = 30) do t
 ob.color = sol(t)[point_map]
 end
+
+# Plot 2
+colors = [sol2(t)[point_map] for t in times]
+
+# Initial frame
+fig, ax, ob = mesh(plot_mesh, color=colors[1], colorrange = extrema(vcat(colors...)))
+ax.aspect = AxisAspect(3.0)
+Colorbar(fig[1,2], ob)
+framerate = 30
+
+# Animation
+record(fig, "diffusion2.gif", range(0.0, 100.0; length=150); framerate = 30) do t
+ob.color = sol2(t)[point_map]
+end # same as diffusion.gif
+
 
 Diffusion = @decapode DiffusionQuantities begin
   C::Form0{X}
@@ -198,6 +218,9 @@ using CombinatorialSpaces.DiscreteExteriorCalculus: ∧
 funcs[:∧₀₁] = Dict(:operator => (r, c,v)->r .= ∧(Tuple{0,1}, periodic_mesh, c, v), :type => InPlaceFunc())
 
 func, code = gen_sim(explicit_ts, funcs, periodic_mesh; autodiff=false, params = [:V]);
+
+# error because of bilinear operator
+# fun = diag2mat(DiffusionAdvection.functor, funcs, periodic_mesh; known=Dict())
 
 velocity(p) = [-0.5, -0.5, 0.0]
 v = flat_op(periodic_mesh, DualVectorField(velocity.(periodic_mesh[triangle_center(periodic_mesh),:dual_point])); dims=[30, 10, Inf])
